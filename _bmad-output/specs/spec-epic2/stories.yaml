@@ -1,0 +1,27 @@
+- id: "1"
+  title: The reviewing agent
+  description: >-
+    Build run_claim.py and the one create_agent agent over the case MCP server.
+    It covers claim states and Retry, fact-grounded one-sentence explanations,
+    injection safety on a fixture database, the Gemini/Groq switch, and an
+    MLflow trace per run (CAP-1, CAP-2, CAP-3, CAP-5).
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Start cases/expense/mcp_server.py by file path over stdio through
+    langchain-mcp-adapters. Run the agent at temperature 0. Unit tests use a
+    fake chat model; the injection check is a live-marked test. Never print an
+    API key.
+- id: "2"
+  title: The eval
+  description: >-
+    Build run_eval.py. It scores the agent on the 30 labelled claims for
+    decision, clause and total accuracy, two-pass consistency, explanation
+    faithfulness and the Groq judge's clarity score, and logs them to MLflow
+    (CAP-4).
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Run each pass on a temporary copy of the database, never app.db. Read
+    cases/expense/eval/labelled.csv directly. Use MLflow on sqlite:///mlflow.db,
+    experiment expense-reviewer.
