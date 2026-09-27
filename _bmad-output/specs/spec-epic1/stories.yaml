@@ -1,47 +1,31 @@
 - id: "1"
-  title: Seed loader and case database
+  title: Seed data and policy engine
   description: >-
-    Build cases/expense/load_seed.py so it loads seed/ into cases/expense/app.db
-    with the claims state and empty decisions tables from mcp-tools.md (CAP-1).
-    Loading a second time gives the same database.
+    Build load_seed.py (CAP-1) so it loads seed/ into cases/expense/app.db with
+    the claims state and empty decisions tables. Then build the deterministic
+    engine from policy-engine-rules.md (CAP-2), which must match 119/119 labels
+    and 30/30 claim totals.
   spec_checkpoint: true
   done_checkpoint: true
   invoke_dev_with: >-
-    Add packages with uv add, never pip. app.db stays gitignored and is never
-    committed. seed/ is read-only.
+    Add packages with uv add, never pip. app.db stays gitignored, and seed/ is
+    read-only. Compare amounts in integer cents or Decimal, with no floats and
+    no rounding. Add a unit test on each side of every threshold edge: the
+    limit, 1.2 x the limit, $25, 60 days and $500. Loading twice must give the
+    same database. No LLM and no MCP in this story.
 - id: "2"
-  title: Deterministic policy engine
+  title: MCP server with guarded record_decision
   description: >-
-    Implement the engine in policy-engine-rules.md (CAP-2): facts plus decision
-    and clause per line item, matching 119/119 labels and 30/30 claim totals,
-    order independent, bad input flagged.
-  spec_checkpoint: true
-  done_checkpoint: true
-  invoke_dev_with: >-
-    Compare amounts in integer cents or Decimal; no floats, no rounding. Add a
-    unit test on each side of every threshold edge: the limit, 1.2 x the limit,
-    $25, 60 days and $500. No LLM.
-- id: "3"
-  title: MCP server read tools
-  description: >-
-    Expose get_claim, get_employee and get_policy_limits over a stdio MCP
-    server (CAP-3), with get_claim returning each line item's engine facts and
-    proposed decision and clause.
+    Expose get_claim (with engine facts and proposed decision), get_employee
+    and get_policy_limits over a stdio MCP server (CAP-3). Add
+    record_decision(claim_id, line_id, decision, clause, explanation,
+    agent_disagrees=false), which refuses engine mismatches and lines outside
+    the claim, sets payout_status, and leaves released rows as they are (CAP-4).
   spec_checkpoint: true
   done_checkpoint: true
   invoke_dev_with: >-
     Mirror the structure of Saturday's mcp/triage_server.py, but don't modify
-    it. An unknown ID returns an error, not an empty result.
-- id: "4"
-  title: Guarded record_decision
-  description: >-
-    Add record_decision(claim_id, line_id, decision, clause, explanation,
-    agent_disagrees=false) (CAP-4). It refuses any write that differs from the
-    engine or names a line outside the claim, sets payout_status, and leaves
-    released rows as they are.
-  spec_checkpoint: true
-  done_checkpoint: true
-  invoke_dev_with: >-
-    Write a test for every refusal path (engine mismatch, line not in claim,
-    released row) and for each payout_status outcome, including $500.00 and
-    $500.01. No tool may set released or clear decisions.
+    it. An unknown ID returns an error, not an empty result. Write a test for
+    every refusal path (engine mismatch, line not in claim, released row) and
+    for each payout_status outcome, including $500.00 and $500.01. No tool may
+    set released or clear decisions.
