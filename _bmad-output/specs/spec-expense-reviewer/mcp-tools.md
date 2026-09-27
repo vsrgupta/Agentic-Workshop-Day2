@@ -46,7 +46,7 @@ Only one run per claim at a time: a claim in `reviewing` can't start another run
 
 ## Re-review
 
-Re-review deletes the claim's decisions whose `payout_status` is not `released`, then runs the agent again. Released rows are never touched. `record_decision` leaves an existing `released` row as it is and reports it as already decided.
+Re-review deletes the claim's decisions whose `payout_status` is not `released`, then runs the agent again. Released rows are never touched. `record_decision` leaves any existing row for the line, released or not, as it is and returns `already_decided`, so the first decision stands and a retry skips lines that are already done.
 
 ## Reimbursable total
 
