@@ -9,9 +9,9 @@ The contract for the case's MCP server (CAP-3) and database (CAP-1).
 | `get_claim(claim_id)` | Claim `employee_id`, `submitted_at`, `purpose`, and its line items. Each line item carries the engine's facts (amount, the limit that applies, day total where relevant, % over the limit, age in days, duplicate-of line ID, receipt, ITA code found) and the **proposed decision and clause**. |
 | `get_employee(employee_id)` | The employee's level and home city. |
 | `get_policy_limits(level, city)` | The limit for each category at that level and city. |
-| `record_decision(line_id, decision, clause, explanation, agent_disagrees=false)` | Writes one row to `decisions`. It refuses the write if the decision or clause differs from the engine's, or if the line isn't in the claim under review. It sets `payout_status` itself. |
+| `record_decision(claim_id, line_id, decision, clause, explanation, agent_disagrees=false)` | Writes one row to `decisions`. It refuses the write if the decision or clause differs from the engine's, or if `line_id` isn't in `claim_id`. It sets `payout_status` itself. |
 
-- `explanation` and `agent_disagrees` are deliberate additions to the `BRIEF.md` signature.
+- `claim_id`, `explanation` and `agent_disagrees` are deliberate additions to the `BRIEF.md` signature.
 - The agent quotes limits only from `get_claim`'s facts. The home city from `get_employee` is never a limit key.
 - No tool changes `payout_status` after the write, releases a payout or clears decisions. Release and Re-review are human actions outside the agent.
 
