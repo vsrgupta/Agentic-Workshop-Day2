@@ -26,6 +26,26 @@ def db(tmp_path):
     return path
 
 
+_open_gates: list[threading.Event] = []
+
+
+@pytest.fixture(autouse=True)
+def clean_workers():
+    """After each test: open every gate, join every worker thread, clear the run registry."""
+    yield
+    for gate in _open_gates:
+        gate.set()
+    _open_gates.clear()
+    with dd._runs_lock:
+        threads = list(dd._threads.values())
+    for thread in threads:
+        thread.join(timeout=60)
+    with dd._runs_lock:
+        dd._threads.clear()
+        dd._results.clear()
+        dd._errors.clear()
+
+
 def decision_rows(db_path):
     conn = sqlite3.connect(db_path)
     try:
@@ -54,6 +74,7 @@ def test_claims_list_on_fresh_seed(db):
 
 def test_start_review_returns_at_once_and_completes(db):
     gate = threading.Event()
+    _open_gates.append(gate)
     messages = script(db, CLAIM)
 
     def gated():
@@ -193,10 +214,24 @@ def test_money_display(cents, text):
 
 
 def test_dashboard_data_never_writes_decisions():
-    source = (CASE_DIR / "dashboard_data.py").read_text(encoding="utf-8").upper()
-    source += (CASE_DIR / "dashboard.py").read_text(encoding="utf-8").upper()
+    """No SQL write in the page, no INSERT anywhere, and UPDATE/DELETE only inside the three
+    human actions (story 3.2: release, re_review, unstick)."""
+    import ast
+
+    page = (CASE_DIR / "dashboard.py").read_text(encoding="utf-8").upper()
     for verb in ("INSERT", "UPDATE", "DELETE"):
-        assert f"{verb} " not in source
+        assert f"{verb} " not in page
+
+    source = (CASE_DIR / "dashboard_data.py").read_text(encoding="utf-8")
+    assert "INSERT " not in source.upper()
+    allowed = {"release", "re_review", "unstick"}
+    rest = source
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name in allowed:
+            rest = rest.replace(ast.get_source_segment(source, node), "")
+    assert rest != source
+    rest = rest.upper()  # module-level code, every other function, nested defs and classes
+    assert "UPDATE " not in rest and "DELETE " not in rest
 
 
 # --- Streamlit smoke test -------------------------------------------------------------------------
@@ -232,7 +267,7 @@ def test_dashboard_renders(app_env, db):
     assert labels.count("Retry") == 1
     assert "start-CL-2002" not in [b.key for b in at.button]
     assert dd._mlflow_ready and (app_env / "mlflow.db").exists()
-    assert len(at.tabs) == 3
+    assert len(at.tabs) == 4  # Claims, Claim view, Flags, Approvals (story 3.2)
 
 
 def test_dashboard_reviews_are_traced(app_env, db):
@@ -253,8 +288,9 @@ def test_dashboard_reviews_are_traced(app_env, db):
 
 
 def _gated_review(db_path, claim_id=CLAIM):
-    """Start a review held at a gate; returns (thread, gate)."""
+    """Start a review held at a gate; returns (thread, gate). Teardown opens the gate."""
     gate = threading.Event()
+    _open_gates.append(gate)
     messages = script(db_path, claim_id)
 
     def gated():

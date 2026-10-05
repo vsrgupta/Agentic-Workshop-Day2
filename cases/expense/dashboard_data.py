@@ -1,14 +1,20 @@
 """Plain, Streamlit-free functions behind the reviewer dashboard (`dashboard.py`).
 
 Every query takes `db_path` (None means `review.DB_PATH`). Nothing here decides a line or
-writes a decision: reviews run Epic 2's `review.review_claim` in a background thread, and
+records a decision: reviews run Epic 2's `review.review_claim` in a background thread, and
 that path (the agent through `record_decision`) is the only writer of decisions.
+
+The three human actions at the bottom (`release`, `re_review`, `unstick`) are the only
+writes here. They are dashboard code for the finance reviewer, never agent or MCP tools.
+Release changes a status; nothing here moves money.
 """
 
 import asyncio
+import os
 import sqlite3
 import threading
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 import policy_engine
@@ -47,6 +53,19 @@ def fmt_cents(cents: int) -> str:
 def action_for(state: str) -> str | None:
     """The start button a claim in `state` shows: Review on waiting, Retry on incomplete, else none."""
     return {"waiting": "Review", "incomplete": "Retry"}.get(state)
+
+
+def recovery_actions(state: str, live: bool = False) -> list[str]:
+    """The recovery buttons a claim shows: Re-review on complete/incomplete, and Unstick
+    only on a reviewing claim. Neither shows while this process has a live worker thread
+    for the claim (both actions refuse then)."""
+    if live:
+        return []
+    if state in ("complete", "incomplete"):
+        return ["Re-review"]
+    if state == "reviewing":
+        return ["Unstick"]
+    return []
 
 
 # --- Queries ---------------------------------------------------------------------------
@@ -89,7 +108,8 @@ def claim_lines(claim_id: str, db_path=None) -> list[dict]:
             raise KeyError(f"No claim with ID {claim_id}")
         rows = conn.execute(
             "SELECT li.line_id, li.date, li.category, li.merchant, li.amount_cents, "
-            "       d.decision, d.clause, d.explanation, d.payout_status, d.agent_disagrees "
+            "       d.decision, d.clause, d.explanation, d.payout_status, d.agent_disagrees, "
+            "       d.released_by, d.released_at "
             "FROM line_items li LEFT JOIN decisions d ON d.line_id = li.line_id "
             "WHERE li.claim_id = ? ORDER BY li.seq",
             (claim_id,),
@@ -108,6 +128,21 @@ def claim_lines(claim_id: str, db_path=None) -> list[dict]:
         line["agent_disagrees"] = bool(line["agent_disagrees"]) if decided else False
         lines.append(line)
     return lines
+
+
+def approval_queue(db_path=None) -> list[dict]:
+    """Every `pending_approval` line (an approve over $500) with its claim ID, line ID,
+    merchant, amount, clause and explanation."""
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT li.claim_id, li.line_id, li.merchant, li.amount_cents, d.clause, d.explanation "
+            "FROM decisions d JOIN line_items li ON li.line_id = d.line_id "
+            "WHERE d.payout_status = 'pending_approval' ORDER BY li.claim_id, li.seq"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r, amount=fmt_cents(r["amount_cents"])) for r in rows]
 
 
 def list_flags(db_path=None) -> list[dict]:
@@ -217,18 +252,28 @@ def start_review(claim_id: str, db_path=None, model=None) -> threading.Thread:
 
     Never raises into the page. Any exception from the run is caught in the thread and
     recorded (see `last_error`). `review_claim`'s own guard enforces one run per claim,
-    so a call on a `reviewing` claim starts no second agent run.
+    so a call on a `reviewing` claim starts no second agent run. While this process already
+    has a live thread for the claim, it starts nothing and returns that thread.
     """
     db = resolve_db(db_path)
-    key = _key(claim_id, db)
     with _runs_lock:
-        _errors.pop(key, None)
-        _results.pop(key, None)
-        thread = threading.Thread(
-            target=_worker, args=(claim_id, db, model), name=f"review-{claim_id}", daemon=True
-        )
-        _threads[key] = thread
-        thread.start()
+        return _start_locked(claim_id, db, model)
+
+
+def _start_locked(claim_id: str, db: Path, model) -> threading.Thread:
+    """Create, register and start the worker. Caller holds `_runs_lock`. Never overwrites a
+    live thread for the same claim: it returns that thread instead."""
+    key = _key(claim_id, db)
+    existing = _threads.get(key)
+    if existing is not None and existing.is_alive():
+        return existing
+    _errors.pop(key, None)
+    _results.pop(key, None)
+    thread = threading.Thread(
+        target=_worker, args=(claim_id, db, model), name=f"review-{claim_id}", daemon=True
+    )
+    _threads[key] = thread
+    thread.start()
     return thread
 
 
@@ -257,3 +302,110 @@ def review_errors(db_path=None) -> dict[str, str]:
     db = str(resolve_db(db_path))
     with _runs_lock:
         return {cid: msg for (path, cid), msg in _errors.items() if path == db}
+
+
+# --- Human actions (the reviewer's buttons; never agent tools) -----------------------------
+
+
+def approver_name() -> str | None:
+    """`APPROVER_NAME` from the environment (loaded from .env), or None when unset or blank."""
+    load_dotenv()
+    name = (os.environ.get("APPROVER_NAME") or "").strip()
+    return name or None
+
+
+def release(line_id: str, db_path=None) -> dict:
+    """Release one `pending_approval` payout: one conditional UPDATE that stamps the approver
+    and the current UTC time. Writes nothing without an approver or on any other status.
+
+    Returns {"status": "released", "released_by", "released_at"} or
+    {"status": "not_pending" | "no_approver"}. No money moves.
+    """
+    approver = approver_name()
+    if approver is None:
+        return {"status": "no_approver"}
+    released_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn = _connect(db_path)
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE decisions SET payout_status = 'released', released_by = ?, released_at = ? "
+                "WHERE line_id = ? AND payout_status = 'pending_approval'",
+                (approver, released_at, line_id),
+            )
+    finally:
+        conn.close()
+    if cur.rowcount != 1:
+        return {"status": "not_pending"}
+    return {"status": "released", "released_by": approver, "released_at": released_at}
+
+
+def re_review(claim_id: str, db_path=None, model=None) -> dict:
+    """Replace a complete or incomplete claim's unreleased decisions and review it again.
+
+    The model is built first (`review.make_model()` when `model` is None); if that fails,
+    nothing is written. Refused while this process has a live worker thread for the claim.
+    In one transaction it deletes the claim's decisions that are not `released` and moves
+    the claim to `waiting`; then, still holding the run lock, it registers and starts the
+    background review. Released rows are never deleted or changed.
+
+    Returns {"status": "started" | "not_allowed"} or {"status": "no_model", "error": str}.
+    """
+    db = resolve_db(db_path)
+    if model is None:
+        try:
+            load_dotenv()
+            model = review.make_model()
+        except Exception as exc:  # e.g. a missing key; its message never contains a key
+            return {"status": "no_model", "error": f"{type(exc).__name__}: {exc}"}
+    with _runs_lock:  # no other worker can register for this claim until ours is registered
+        if _live(claim_id, db):
+            return {"status": "not_allowed"}
+        conn = _connect(db)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "UPDATE claims SET state = 'waiting' "
+                    "WHERE claim_id = ? AND state IN ('complete', 'incomplete')",
+                    (claim_id,),
+                )
+                if cur.rowcount != 1:
+                    return {"status": "not_allowed"}
+                conn.execute(
+                    "DELETE FROM decisions WHERE payout_status != 'released' "
+                    "AND line_id IN (SELECT line_id FROM line_items WHERE claim_id = ?)",
+                    (claim_id,),
+                )
+        finally:
+            conn.close()
+        _start_locked(claim_id, db, model)
+    return {"status": "started"}
+
+
+def unstick(claim_id: str, db_path=None) -> dict:
+    """Recover a claim left in `reviewing` (say, after a hard kill): one conditional UPDATE
+    to `incomplete`, so Retry works. Refused while this process has a live worker thread
+    for the claim. Changes no decisions.
+
+    Returns {"status": "unstuck" | "not_allowed"}.
+    """
+    db = resolve_db(db_path)
+    with _runs_lock:
+        if _live(claim_id, db):
+            return {"status": "not_allowed"}
+        conn = _connect(db)
+        try:
+            with conn:
+                cur = conn.execute(
+                    "UPDATE claims SET state = 'incomplete' WHERE claim_id = ? AND state = 'reviewing'",
+                    (claim_id,),
+                )
+        finally:
+            conn.close()
+    return {"status": "unstuck" if cur.rowcount == 1 else "not_allowed"}
+
+
+def _live(claim_id: str, db: Path) -> bool:
+    """Whether this claim has a live worker thread on `db`. Caller holds `_runs_lock`."""
+    thread = _threads.get(_key(claim_id, db))
+    return thread is not None and thread.is_alive()
