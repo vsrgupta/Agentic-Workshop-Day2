@@ -1,0 +1,25 @@
+- id: "1"
+  title: The dashboard
+  description: >-
+    Build the Streamlit app. It covers the claims list with state, Review and
+    Retry starting Epic 2's review in the background, the claim view with
+    agent_disagrees markers, and the read-only flags view (CAP-1, CAP-2, CAP-4).
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Add Streamlit with uv add streamlit. Keep logic in plain functions that can
+    be tested without Streamlit. Run reviews in a worker thread with
+    asyncio.run(review_claim(...)). Tests use a temporary database and never a
+    real model.
+- id: "2"
+  title: Payout and recovery actions
+  description: >-
+    Add the approval queue with Release stamped by APPROVER_NAME and the UTC
+    time, Re-review that keeps released rows, and Unstick with a warning for
+    claims stuck in reviewing (CAP-3, CAP-5, CAP-6).
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    The actions are plain functions tested without Streamlit. Release only
+    pending_approval rows. Re-review never touches released rows. Refuse a
+    release when APPROVER_NAME is unset.
