@@ -294,6 +294,28 @@ def test_make_judge_is_none_without_a_key(monkeypatch):
     assert run_eval.make_judge() is None
 
 
+def test_make_judge_uses_json_schema_structured_output(monkeypatch):
+    # Tool-calling mode let the model answer in plain text, which Groq rejected (400 tool_use_failed).
+    import langchain_groq
+
+    seen = {}
+
+    class FakeGroq:
+        def __init__(self, **kwargs):
+            seen["init"] = kwargs
+
+        def with_structured_output(self, schema, **kwargs):
+            seen["schema"], seen["kwargs"] = schema, kwargs
+            return "judge"
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(langchain_groq, "ChatGroq", FakeGroq)
+    assert run_eval.make_judge() == "judge"
+    assert seen["schema"] is run_eval.Clarity
+    assert seen["kwargs"] == {"method": "json_schema"}
+    assert seen["init"]["temperature"] == 0
+
+
 def test_judge_retries_rate_limits(monkeypatch):
     monkeypatch.setattr(run_eval, "_sleep", lambda s: None)
     judge = FakeJudge(fail_first=2)

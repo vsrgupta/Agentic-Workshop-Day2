@@ -117,6 +117,11 @@ context:
   - Six verification tests added.
   - The suite now shows 151 passed and 1 skipped (the live test).
 
+- **Follow-up fix (found in the first real Groq run):**
+  - **Problem:** on 2 of 4 explanations, the judge on `openai/gpt-oss-120b` answered in plain text ("clear=true") instead of calling the tool. Groq rejected those calls (400 `tool_use_failed`), so they were never rated.
+  - **Fix:** the judge now uses `with_structured_output(Clarity, method="json_schema")`, and the prompt no longer suggests literal `clear=true` text. A regression test was added.
+  - **Result:** the smoke run on CL-2016 with Groq rated 4 of 4, every gated metric was 1.0, and exit was 0. The suite shows 152 passed and 1 skipped.
+
 ## Spec Change Log
 
 ## Review Triage Log
